@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont_mod
 from datetime import datetime
 
 SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex", "sessions")
@@ -272,6 +273,7 @@ class UsageWidget:
 
         self.canvas = tk.Canvas(self.root, bg=TRANSPARENT, highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True)
+        self.tkfont = tkfont_mod.Font(root=self.root, family=FONT, size=8)
 
         # 交互：拖动 / 右键
         self.canvas.bind("<Button-1>", self.on_press)
@@ -316,10 +318,10 @@ class UsageWidget:
                 capsule_pts(x_sym - 8, Y_TITLE - 8, x_sym + 8, Y_TITLE + 8, 8),
                 smooth=True, fill=bg_fill, outline=FAINT, tags=f"btn-{key}")
             sym = self.canvas.create_text(
-                x_sym, Y_TITLE, text=meta["sym"], fill=meta["sym_fill"],
+                x_sym, Y_TITLE - 1, text=meta["sym"], fill=meta["sym_fill"],
                 font=(FONT, 8), tags=f"btn-{key}")
             txt = self.canvas.create_text(
-                x_sym - 18, Y_TITLE, anchor="e", text=meta["txt"], fill=INK,
+                0, Y_TITLE - 1, anchor="w", text=meta["txt"], fill=INK,
                 font=(FONT, 8), state="hidden", tags=f"btn-{key}")
             self.canvas.tag_bind(f"btn-{key}", "<Enter>",
                                  lambda e, k=key: self.on_btn_enter(k))
@@ -327,7 +329,11 @@ class UsageWidget:
                                  lambda e, k=key: self.on_btn_leave(k))
             self.canvas.tag_bind(f"btn-{key}", "<Button-1>",
                                  lambda e, k=key: clicks[k]())
-            self.btns[key] = {"bg": bg, "sym": sym, "txt": txt, "w": 16, "x": x_sym}
+            # 展开宽度 = 符号圆(16) + 实测文字宽 + 两侧留白，杜绝文字出框
+            txt_w = self.tkfont.measure(meta["txt"])
+            self.btns[key] = {"bg": bg, "sym": sym, "txt": txt,
+                              "w": 16, "x": x_sym,
+                              "w_full": 16 + txt_w + 10}
 
         # 时钟
         self.clock_id = self.canvas.create_text(
@@ -441,11 +447,11 @@ class UsageWidget:
     def _btn_meta(self, key):
         return {
             "pin": dict(sym="◆" if self.pinned else "◇",
-                        txt="解除固定" if self.pinned else "固定位置", w=64,
+                        txt="解除固定" if self.pinned else "固定位置",
                         sym_fill=ACCENT if self.pinned else FAINT, hover=ACCENT),
-            "min": dict(sym="—", txt="最小化", w=60,
+            "min": dict(sym="—", txt="最小化",
                         sym_fill=FAINT, hover=ACCENT),
-            "close": dict(sym="✕", txt="关闭", w=48,
+            "close": dict(sym="✕", txt="关闭",
                           sym_fill=FAINT, hover=BAD),
         }[key]
 
@@ -455,7 +461,7 @@ class UsageWidget:
             if k != key:
                 for item in (b["bg"], b["sym"], b["txt"]):
                     self.canvas.itemconfig(item, state="hidden")
-        self._animate_btn(key, self._btn_meta(key)["w"])
+        self._animate_btn(key, self.btns[key]["w_full"])
 
     def on_btn_leave(self, key):
         self._cancel_btn_jobs()
@@ -476,8 +482,12 @@ class UsageWidget:
         else:
             b["w"] = max(target, b["w"] - 5)
         x = b["x"]
+        # 胶囊从符号圆向左生长：右缘固定包住符号，左缘 = 右缘 - 当前宽
+        left, right = x + 8 - b["w"], x + 8
         self.canvas.coords(b["bg"], *capsule_pts(
-            x + 8 - b["w"], Y_TITLE - 8, x + 8, Y_TITLE + 8, 8))
+            left, Y_TITLE - 8, right, Y_TITLE + 8, 8))
+        # 文字放胶囊内左侧：留 6px 内边距，垂直 -1 修正中文基线
+        self.canvas.coords(b["txt"], left + 6, Y_TITLE - 1)
         expanded = target > 16 and b["w"] >= target - 8
         self.canvas.itemconfig(b["txt"], state="normal" if expanded else "hidden")
         self.canvas.itemconfig(b["bg"], outline=meta["hover"] if expanded else FAINT)
