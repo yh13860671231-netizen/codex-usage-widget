@@ -274,6 +274,7 @@ class UsageWidget:
         self.canvas = tk.Canvas(self.root, bg=TRANSPARENT, highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True)
         self.tkfont = tkfont_mod.Font(root=self.root, family=FONT, size=8)
+        self._active_btn = None
 
         # 交互：拖动 / 右键
         self.canvas.bind("<Button-1>", self.on_press)
@@ -312,7 +313,7 @@ class UsageWidget:
         self.btns = {}
         clicks = {"pin": self.toggle_pin, "min": self.build_mini,
                   "close": self.root.destroy}
-        for key, x_sym in (("pin", right - 44), ("min", right - 26), ("close", right - 8)):
+        for key, x_sym in (("pin", right - 60), ("min", right - 38), ("close", right - 8)):
             meta = self._btn_meta(key)
             bg = self.canvas.create_polygon(
                 capsule_pts(x_sym - 8, Y_TITLE - 8, x_sym + 8, Y_TITLE + 8, 8),
@@ -457,6 +458,7 @@ class UsageWidget:
 
     def on_btn_enter(self, key):
         self._cancel_btn_jobs()
+        self._active_btn = key
         for k, b in self.btns.items():
             if k != key:
                 for item in (b["bg"], b["sym"], b["txt"]):
@@ -464,6 +466,9 @@ class UsageWidget:
         self._animate_btn(key, self.btns[key]["w_full"])
 
     def on_btn_leave(self, key):
+        # 鼠标移到相邻按钮上时不收缩（Enter 已把 _active_btn 换人）
+        if self._active_btn != key:
+            return
         self._cancel_btn_jobs()
         self._btn_job = self.root.after(150, lambda: self._animate_btn(key, 16))
 
@@ -493,7 +498,8 @@ class UsageWidget:
         self.canvas.itemconfig(b["bg"], outline=meta["hover"] if expanded else FAINT)
         self.canvas.itemconfig(b["sym"], fill=meta["hover"] if expanded else meta["sym_fill"])
         if target <= 16 and b["w"] <= 16:
-            for k, b2 in self.btns.items():  # 收回完成，恢复相邻按钮
+            self._active_btn = None  # 收回完成，交还控制权
+            for k, b2 in self.btns.items():  # 恢复相邻按钮
                 if k != key:
                     self.canvas.itemconfig(b2["bg"], state="normal")
                     self.canvas.itemconfig(b2["sym"], state="normal")
