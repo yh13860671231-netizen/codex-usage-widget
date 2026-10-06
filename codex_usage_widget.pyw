@@ -8,6 +8,9 @@
 import glob
 import json
 import os
+import subprocess
+import sys
+import threading
 import time
 import tkinter as tk
 from datetime import datetime
@@ -18,6 +21,14 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "widget_c
 REFRESH_MS = 30_000
 TAIL_BYTES = 262144
 ENABLE_ACRYLIC = False  # 实测 DWM backdrop 对无框挖洞窗口无效，默认关闭
+
+CODEX_EXES = (
+    # npm 原生 exe（本机）
+    r"D:\dev\nodejs\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64"
+    r"\vendor\x86_64-pc-windows-msvc\bin\codex.exe",
+    # 通用：PATH 里的 codex（Windows 需 .cmd/.exe 解析）
+    "codex",
+)
 
 # ---- 设计 tokens（Tokyo Night 系深色）----
 TRANSPARENT = "#a040ff"  # 窗口挖洞色，内容中不会出现
@@ -88,6 +99,80 @@ def load_usage():
         rl = find_key(obj, "rate_limits")
         if rl and isinstance(rl.get("primary"), dict):
             return rl, find_key(obj, "last_token_usage"), find_key(obj, "model_context_window"), obj.get("timestamp")
+    return None
+
+
+def load_live_rate_limits():
+    """启动 codex app-server 询问官方实时限额（与 /usage、官方 UI 同源）。
+
+    返回 dict(primary={used_percent, resets_at}, secondary=...) 或 None。
+    耗时约 2-4 秒（进程冷启），必须在后台线程调用。
+    """
+    for exe in CODEX_EXES:
+        try:
+            proc = subprocess.Popen(
+                [exe, "app-server"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL)
+        except OSError:
+            continue
+        responses = {}
+
+        def reader(p=proc):
+            for line in p.stdout:
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if "id" in obj:
+                    responses[obj["id"]] = obj
+
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+
+        def send(obj):
+            try:
+                proc.stdin.write((json.dumps(obj) + "\n").encode())
+                proc.stdin.flush()
+            except OSError:
+                pass
+
+        def wait(rid, timeout=8):
+            deadline = time.time() + timeout
+            while time.time() < deadline and rid not in responses:
+                time.sleep(0.05)
+            return responses.get(rid)
+
+        try:
+            send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "clientInfo": {"name": "codex-usage-widget", "title": "Usage Widget",
+                               "version": "1.0"}}})
+            if wait(1):
+                send({"jsonrpc": "2.0", "method": "initialized"})
+                time.sleep(0.4)
+                send({"jsonrpc": "2.0", "id": 2,
+                      "method": "account/rateLimits/read", "params": {}})
+                r = wait(2)
+                if r and "result" in r:
+                    rl = (r["result"].get("rateLimits")
+                          or r["result"].get("rateLimitsByLimitId", {}).get("codex"))
+                    if rl and "primary" in rl:
+                        return {
+                            "primary": {
+                                "used_percent": rl["primary"].get("usedPercent"),
+                                "resets_at": rl["primary"].get("resetsAt"),
+                            },
+                            "secondary": {
+                                "used_percent": rl["secondary"].get("usedPercent"),
+                                "resets_at": rl["secondary"].get("resetsAt"),
+                            } if rl.get("secondary") else None,
+                            "live": True,
+                        }
+        finally:
+            try:
+                proc.kill()
+            except OSError:
+                pass
     return None
 
 
@@ -478,6 +563,11 @@ class UsageWidget:
         setattr(self, attr, fill)
 
     def refresh(self):
+        # 官方实时查询放后台线程（冷启约 2-4 秒，不能卡 UI），完成后覆盖显示
+        self._live_seq = getattr(self, "_live_seq", 0) + 1
+        seq = self._live_seq
+        threading.Thread(target=self._live_worker, args=(seq,), daemon=True).start()
+
         try:
             data = load_usage()
         except OSError as e:
@@ -494,7 +584,26 @@ class UsageWidget:
             self.root.after(REFRESH_MS, self.refresh)
             return
         rl, usage, ctx_win, ts = data
+        self._render_card(rl, usage, ctx_win, ts, live=False)
+        self.root.after(REFRESH_MS, self.refresh)
 
+    def _live_worker(self, seq):
+        live = load_live_rate_limits()
+        if live is None or seq != getattr(self, "_live_seq", 0):
+            return  # 查询失败或已被新一轮刷新取代
+        self._live_data = live
+        try:
+            usage = load_usage()
+        except OSError:
+            usage = None
+        if self.mode == "mini":
+            self._refresh_mini(usage)
+        elif usage:
+            self._render_card(usage[0], usage[1], usage[2], usage[3], live=True)
+
+    def _render_card(self, rl, usage, ctx_win, ts, live):
+        if live:
+            rl = self._live_data  # 实时值优先，覆盖本地快照
         primary = rl["primary"]
         used = primary.get("used_percent") or 0.0
         remain = 100.0 - used
@@ -533,7 +642,9 @@ class UsageWidget:
         if isinstance(usage, dict) and ctx_win:
             pct = min(100.0, (usage.get("total_tokens") or 0) / ctx_win * 100)
             foot = f"上下文 {pct:.0f}%"
-        if ts:
+        if live:
+            foot = f"{foot} · 实时" if foot else "实时"
+        elif ts:
             try:
                 dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
                 age = max(0, (datetime.now().astimezone() - dt).total_seconds())
@@ -547,21 +658,15 @@ class UsageWidget:
         self.root.after(REFRESH_MS, self.refresh)
 
     def _refresh_mini(self, data):
-        """迷你条：上行 Codex 5h/周剩余，下行 ZCode 今日剩余 + 数据新鲜度。"""
+        """迷你条：上行 Codex 5h/周剩余，下行 ZCode 今日剩余 + 余额。"""
         try:
             z = load_zcode_usage()
         except OSError:
             z = None
-        if data:
-            rl = data[0]
-            remain = 100.0 - (rl["primary"].get("used_percent") or 0.0)
-            self.canvas.itemconfig(self.mini_c, text=f"{remain:.0f}%",
-                                   fill=level_color(remain))
-            secondary = rl.get("secondary")
-            if isinstance(secondary, dict):
-                wremain = 100.0 - (secondary.get("used_percent") or 0.0)
-                self.canvas.itemconfig(self.mini_c2, text=f"{wremain:.0f}%",
-                                       fill=level_color(wremain))
+        if getattr(self, "_live_data", None):
+            self._apply_mini(self._live_data, live=True)
+        elif data:
+            self._apply_mini(data[0], live=False)
         if z:
             zremain = z["remaining"] / z["total"] * 100
             self.canvas.itemconfig(self.mini_z, text=f"{zremain:.0f}%",
@@ -569,6 +674,22 @@ class UsageWidget:
             if hasattr(self, "mini_foot"):
                 self.canvas.itemconfig(
                     self.mini_foot, text=f"{z['remaining'] / 1e6:.1f}M 剩")
+
+    def _apply_mini(self, rl, live):
+        primary = rl["primary"]
+        remain = 100.0 - (primary.get("used_percent") or 0.0)
+        self.canvas.itemconfig(self.mini_c, text=f"{remain:.0f}%",
+                               fill=level_color(remain))
+        secondary = rl.get("secondary")
+        if isinstance(secondary, dict):
+            wremain = 100.0 - (secondary.get("used_percent") or 0.0)
+            self.canvas.itemconfig(self.mini_c2, text=f"{wremain:.0f}%",
+                                   fill=level_color(wremain))
+        if hasattr(self, "mini_foot"):
+            cur = self.canvas.itemcget(self.mini_foot, "text")
+            base = cur.replace(" · 实时", "").replace("实时", "").strip()
+            self.canvas.itemconfig(
+                self.mini_foot, text=f"{base} · 实时" if live else base)
 
 
 if __name__ == "__main__":
