@@ -295,15 +295,12 @@ class UsageWidget:
     def build_card(self):
         cfg = load_config()
         x, y = cfg.get("x", 60), cfg.get("y", 60)
-        self.clear_bg = cfg.get("bg") == "clear"
         self.mode = "card"
         self.canvas.delete("all")
         self.canvas.config(width=W, height=H)
         self.root.geometry(f"{W}x{H}+{x}+{y}")
 
-        bg_fill = TRANSPARENT if self.clear_bg else CARD
-        self.capsule(1, 1, W - 1, H - 1, 14, fill=bg_fill,
-                     outline=LINE if self.clear_bg else "")
+        self.capsule(1, 1, W - 1, H - 1, 14, fill=CARD, outline="")
 
         # 头部：标题 + 三按钮（图钉/最小化/关闭，hover 展开功能文字）
         self.canvas.create_text(PAD, Y_TITLE, anchor="w", text="⚡ 用量监控",
@@ -317,7 +314,7 @@ class UsageWidget:
             meta = self._btn_meta(key)
             bg = self.canvas.create_polygon(
                 capsule_pts(x_sym - 8, Y_TITLE - 8, x_sym + 8, Y_TITLE + 8, 8),
-                smooth=True, fill=bg_fill, outline=FAINT, tags=f"btn-{key}")
+                smooth=True, fill=CARD, outline=FAINT, tags=f"btn-{key}")
             sym = self.canvas.create_text(
                 x_sym, Y_TITLE - 1, text=meta["sym"], fill=meta["sym_fill"],
                 font=(FONT, 8), tags=f"btn-{key}")
@@ -387,8 +384,6 @@ class UsageWidget:
             self.pin_var.set(self.pinned)
         self.menu.add_checkbutton(label="固定位置（固定后不可拖动）",
                                   variable=self.pin_var, command=self.on_pin_menu)
-        self.menu.add_command(label="背景：切换为透明" if not self.clear_bg else "背景：切换为实心",
-                              command=self.toggle_bg)
         self.menu.add_command(label="最小化到顶部", command=self.build_mini)
         self.menu.add_command(label="立即刷新", command=self.refresh)
         self.menu.add_separator()
@@ -401,19 +396,17 @@ class UsageWidget:
             mini_x = (self.root.winfo_screenwidth() - W_MINI) // 2
         if self.mode != "mini":  # 仅从卡片最小化时记卡片位置，重建迷你条时不覆盖
             save_config(x=self.root.winfo_x(), y=self.root.winfo_y())
-        self.clear_bg = cfg.get("bg") == "clear"
         self.mode = "mini"
         self.canvas.delete("all")
         self.canvas.config(width=W_MINI, height=H_MINI)
         self.root.geometry(f"{W_MINI}x{H_MINI}+{mini_x}+1")
 
-        bg_fill = TRANSPARENT if self.clear_bg else CARD
-        self.capsule(1, 1, W_MINI - 1, H_MINI - 1, 12, fill=bg_fill,
-                     outline=LINE if self.clear_bg else "")
-        # 上行：时钟 + Codex 5h / 本周 剩余；下行：ZCode 今日剩余 + 页脚信息
-        y1, y2 = H_MINI * 0.32, H_MINI * 0.72
+        self.capsule(1, 1, W_MINI - 1, H_MINI - 1, 12, fill=CARD, outline="")
+        # 时钟大号跨两行垂直居中；右侧上下两行放数据
+        y1, y2 = H_MINI * 0.30, H_MINI * 0.72
         self.clock_id = self.canvas.create_text(
-            14, y1, anchor="w", text="00:00:00", fill=CLOCK, font=(FONT, 13, "bold"))
+            14, H_MINI / 2, anchor="w", text="00:00:00", fill=CLOCK,
+            font=(FONT, 16, "bold"))
         self.mini_c = self.canvas.create_text(
             118, y1, anchor="e", text="--", fill=SUB, font=(FONT, 11, "bold"))
         self.canvas.create_text(124, y1, anchor="w", text="C·5h",
@@ -436,8 +429,6 @@ class UsageWidget:
             self.pin_var.set(self.pinned)
         self.menu.add_checkbutton(label="固定位置（固定后不可拖动）",
                                   variable=self.pin_var, command=self.on_pin_menu)
-        self.menu.add_command(label="背景：切换为透明" if not self.clear_bg else "背景：切换为实心",
-                              command=self.toggle_bg)
         self.menu.add_command(label="展开", command=self.build_card)
         self.menu.add_command(label="立即刷新", command=self.refresh)
         self.menu.add_separator()
@@ -479,6 +470,8 @@ class UsageWidget:
             self._btn_job = None
 
     def _animate_btn(self, key, target):
+        if not self.alive():
+            return
         self._btn_job = None
         b = self.btns[key]
         meta = self._btn_meta(key)
@@ -511,10 +504,6 @@ class UsageWidget:
     def toggle_pin(self):
         self.set_pin(not self.pinned)
 
-    def toggle_bg(self):
-        save_config(bg="clear" if not self.clear_bg else "solid")
-        (self.build_mini if self.mode == "mini" else self.build_card)()
-
     def on_pin_menu(self):
         """checkbutton 点击后 var 已翻转，从这里单向同步到状态。"""
         self.set_pin(self.pin_var.get())
@@ -532,12 +521,23 @@ class UsageWidget:
     def capsule(self, x1, y1, x2, y2, r, **kw):
         return self.canvas.create_polygon(capsule_pts(x1, y1, x2, y2, r), smooth=True, **kw)
 
+    def alive(self):
+        """窗口销毁后 after 回调仍可能在队列里触发，先验存活。"""
+        try:
+            return bool(self.root.winfo_exists())
+        except tk.TclError:
+            return False
+
     def keep_on_top(self):
+        if not self.alive():
+            return
         """无框 topmost 小窗会被抢前台的应用压住，定时续权置顶。"""
         self.root.attributes("-topmost", True)
         self.root.after(5000, self.keep_on_top)
 
     def tick(self):
+        if not self.alive():
+            return
         """时钟每秒对齐墙钟刷新，避免 after(1000) 的累积漂移。"""
         now = time.time()
         self.canvas.itemconfig(self.clock_id, text=time.strftime("%H:%M:%S"))
@@ -579,6 +579,8 @@ class UsageWidget:
         setattr(self, attr, fill)
 
     def refresh(self):
+        if not self.alive():
+            return
         # 官方实时查询放后台线程（冷启约 2-4 秒，不能卡 UI），完成后覆盖显示
         self._live_seq = getattr(self, "_live_seq", 0) + 1
         seq = self._live_seq
@@ -607,6 +609,8 @@ class UsageWidget:
         live = load_live_rate_limits()
         if live is None or seq != getattr(self, "_live_seq", 0):
             return  # 查询失败或已被新一轮刷新取代
+        if not self.alive():
+            return
         self._live_data = live
         try:
             usage = load_usage()
