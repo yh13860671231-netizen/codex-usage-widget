@@ -32,7 +32,7 @@ LINE = "#2a2a35"         # 分隔线
 GOOD, WARN, BAD = "#9ece6a", "#e0af68", "#f7768e"
 
 W, H = 264, 288          # 完整卡片
-W_MINI, H_MINI = 170, 26  # 顶部迷你条
+W_MINI, H_MINI = 320, 46  # 顶部迷你条
 PAD = 16
 FONT = "Microsoft YaHei UI"
 BAR_H = 7
@@ -318,16 +318,24 @@ class UsageWidget:
         bg_fill = TRANSPARENT if self.clear_bg else CARD
         self.capsule(1, 1, W_MINI - 1, H_MINI - 1, 12, fill=bg_fill,
                      outline=LINE if self.clear_bg else "")
+        # 上行：时钟 + Codex 5h / 本周 剩余；下行：ZCode 今日剩余 + 页脚信息
+        y1, y2 = H_MINI * 0.32, H_MINI * 0.72
         self.clock_id = self.canvas.create_text(
-            12, H_MINI / 2, anchor="w", text="00:00:00", fill=CLOCK, font=(FONT, 9))
+            14, y1, anchor="w", text="00:00:00", fill=CLOCK, font=(FONT, 13, "bold"))
         self.mini_c = self.canvas.create_text(
-            96, H_MINI / 2, anchor="e", text="--", fill=SUB, font=(FONT, 9, "bold"))
+            118, y1, anchor="e", text="--", fill=SUB, font=(FONT, 11, "bold"))
+        self.canvas.create_text(124, y1, anchor="w", text="C·5h",
+                                fill=FAINT, font=(FONT, 7, "bold"))
+        self.mini_c2 = self.canvas.create_text(
+            W_MINI - 14, y1, anchor="e", text="--", fill=SUB, font=(FONT, 11, "bold"))
+        self.canvas.create_text(W_MINI - 76, y1, anchor="e", text="C·周",
+                                fill=FAINT, font=(FONT, 7, "bold"))
         self.mini_z = self.canvas.create_text(
-            W_MINI - 12, H_MINI / 2, anchor="e", text="--", fill=SUB, font=(FONT, 9, "bold"))
-        self.canvas.create_text(103, H_MINI / 2, anchor="w", text="C",
-                                fill=FAINT, font=(FONT, 6, "bold"))
-        self.canvas.create_text(W_MINI - 44, H_MINI / 2, anchor="w", text="Z",
-                                fill=FAINT, font=(FONT, 6, "bold"))
+            118, y2, anchor="e", text="--", fill=SUB, font=(FONT, 11, "bold"))
+        self.canvas.create_text(124, y2, anchor="w", text="Z·今日",
+                                fill=FAINT, font=(FONT, 7, "bold"))
+        self.mini_foot = self.canvas.create_text(
+            W_MINI - 14, y2, anchor="e", text="", fill=FAINT, font=(FONT, 8))
 
         self.menu.delete(0, "end")
         if not hasattr(self, "pin_var"):
@@ -539,19 +547,28 @@ class UsageWidget:
         self.root.after(REFRESH_MS, self.refresh)
 
     def _refresh_mini(self, data):
-        """迷你条：时钟旁只更新两个关键剩余%（Codex 5h / ZCode 今日）。"""
+        """迷你条：上行 Codex 5h/周剩余，下行 ZCode 今日剩余 + 数据新鲜度。"""
         try:
             z = load_zcode_usage()
         except OSError:
             z = None
         if data:
-            remain = 100.0 - (data[0]["primary"].get("used_percent") or 0.0)
+            rl = data[0]
+            remain = 100.0 - (rl["primary"].get("used_percent") or 0.0)
             self.canvas.itemconfig(self.mini_c, text=f"{remain:.0f}%",
                                    fill=level_color(remain))
+            secondary = rl.get("secondary")
+            if isinstance(secondary, dict):
+                wremain = 100.0 - (secondary.get("used_percent") or 0.0)
+                self.canvas.itemconfig(self.mini_c2, text=f"{wremain:.0f}%",
+                                       fill=level_color(wremain))
         if z:
             zremain = z["remaining"] / z["total"] * 100
             self.canvas.itemconfig(self.mini_z, text=f"{zremain:.0f}%",
                                    fill=level_color(zremain))
+            if hasattr(self, "mini_foot"):
+                self.canvas.itemconfig(
+                    self.mini_foot, text=f"{z['remaining'] / 1e6:.1f}M 剩")
 
 
 if __name__ == "__main__":
